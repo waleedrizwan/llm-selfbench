@@ -159,7 +159,7 @@ def run_benchmark(
     continue_on_fail = bool(run_cfg.get("continue_on_provider_check_failure", False) if continue_on_provider_check_failure is None else continue_on_provider_check_failure)
 
     providers_cfg: List[Dict[str, Any]] = [dict(p) for p in config.get("providers", [])]
-    for model in openrouter_models or []:
+    for model in dict.fromkeys(openrouter_models or []):  # de-duplicate, preserve order
         providers_cfg.append(
             {
                 "name": f"openrouter:{model}",
@@ -182,11 +182,28 @@ def run_benchmark(
     def selected(cfg: Mapping[str, Any]) -> bool:
         name = str(cfg.get("name", "")).lower()
         ptype = str(cfg.get("type", "")).lower()
+        enabled = bool(cfg.get("enabled", True))
         if filters:
-            return any(f in name or f == ptype or f == name for f in filters)
-        return bool(cfg.get("enabled", True))
+            for f in filters:
+                if f == name:
+                    return True  # exact name is an explicit opt-in; overrides enabled=false
+                if (f == ptype or f in name) and enabled:
+                    return True  # a type/substring match must not resurrect a disabled provider
+            return False
+        return enabled
 
-    providers: List[Provider] = [build_provider(cfg) for cfg in providers_cfg if selected(cfg)]
+    selected_cfgs: List[Dict[str, Any]] = []
+    seen_names: set = set()
+    for cfg in providers_cfg:
+        if not selected(cfg):
+            continue
+        pname = str(cfg.get("name") or cfg.get("type") or "provider")
+        if pname in seen_names:
+            continue  # duplicate names would double-count the per-provider summary
+        seen_names.add(pname)
+        selected_cfgs.append(cfg)
+
+    providers: List[Provider] = [build_provider(cfg) for cfg in selected_cfgs]
     if not providers:
         raise ValueError("No providers selected. Enable providers in config or pass --openrouter-model / --providers.")
 
@@ -212,6 +229,7 @@ def run_benchmark(
     write_json(out_dir / "benchmark_used.json", dict(bench))
     write_json(out_dir / "provider_checks.json", provider_checks)
 
+    defaults = bench.get("defaults", {}) if isinstance(bench.get("defaults"), Mapping) else {}
     per_test_rows: List[Dict[str, Any]] = []
     started_at = utc_now_iso()
     total_work = len(providers) * len(tests) * k
@@ -232,8 +250,22 @@ def run_benchmark(
                 except Exception as exc:  # noqa: BLE001 - preserve failed attempt instead of aborting the whole run
                     result = ProviderResult(raw_output="", latency_sec=0.0, error=f"provider invocation failed: {exc}")
                 raw = result.raw_output or ""
-                extracted_info = extract_answer(raw, test, bench.get("defaults", {}) if isinstance(bench.get("defaults"), Mapping) else {}) if not result.error else {"answer": "", "normalized": "", "method": "none"}
-                grade = grade_answer(extracted_info["answer"], raw, test) if not result.error else {"correct": False, "grade_type": "error", "error": result.error}
+                attempt_error = result.error
+                if attempt_error:
+                    # Infrastructure failure (timeout, non-zero exit, HTTP error):
+                    # record it, but grade as "no data" (None) so it drops out of
+                    # pass@1 / attempt-accuracy rather than counting as a wrong
+                    # answer. It is still reflected in error_rate via the error field.
+                    extracted_info = {"answer": "", "normalized": "", "method": "none"}
+                    grade = {"correct": None, "grade_type": "error", "error": attempt_error}
+                else:
+                    try:
+                        extracted_info = extract_answer(raw, test, defaults)
+                        grade = grade_answer(extracted_info["answer"], raw, test)
+                    except Exception as exc:  # noqa: BLE001 - a grader bug must not abort the whole run
+                        attempt_error = f"grading failed: {exc}"
+                        extracted_info = {"answer": "", "normalized": "", "method": "none"}
+                        grade = {"correct": None, "grade_type": "error", "error": attempt_error}
                 attempt_row: Dict[str, Any] = {
                     "run_started_at": started_at,
                     "provider": provider.name,
@@ -249,7 +281,7 @@ def run_benchmark(
                     "correct": grade.get("correct"),
                     "grade": grade,
                     "latency_sec": result.latency_sec,
-                    "error": result.error,
+                    "error": attempt_error,
                     "returncode": result.returncode,
                     "stderr": result.stderr,
                     "usage": result.usage,
@@ -259,15 +291,25 @@ def run_benchmark(
                 append_jsonl(attempts_path, attempt_row)
                 done += 1
                 if not quiet:
-                    symbol = "E" if result.error else ("✓" if grade.get("correct") is True else ("×" if grade.get("correct") is False else "."))
+                    symbol = "E" if attempt_error else ("✓" if grade.get("correct") is True else ("×" if grade.get("correct") is False else "."))
                     print(symbol, end="", flush=True)
             majority = _choose_majority(attempts)
-            majority_grade = grade_answer(majority["answer"], majority["answer"], test) if majority["answer"] else {"correct": False, "grade_type": "majority", "error": "no valid majority answer"}
+            if majority["answer"]:
+                # Grade the majority against a representative winning attempt's full
+                # raw output so target:"raw" graders behave like per-attempt grading.
+                winner_raw = next(
+                    (a["raw_output"] for a in attempts
+                     if not a.get("error") and a.get("normalized") == majority["normalized"]),
+                    majority["answer"],
+                )
+                majority_grade = grade_answer(majority["answer"], winner_raw, test)
+            else:
+                majority_grade = {"correct": None, "grade_type": "majority", "error": "no valid majority answer"}
             first_correct = attempts[0].get("correct") if attempts else None
             any_correct = any(a.get("correct") is True for a in attempts)
             graded = [a for a in attempts if a.get("correct") is not None]
             correct_count = sum(1 for a in graded if a.get("correct") is True)
-            stability = (majority["count"] / majority["valid_attempts"]) if majority["valid_attempts"] else 0.0
+            stability = (majority["count"] / majority["valid_attempts"]) if majority["valid_attempts"] else None
             row = {
                 "provider": provider.name,
                 "provider_type": provider.type,

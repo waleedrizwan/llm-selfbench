@@ -21,11 +21,15 @@ def normalize_for_vote(text: Optional[str]) -> str:
 
 
 def normalize_loose(text: Optional[str]) -> str:
-    text = normalize_for_vote(text)
+    base = normalize_for_vote(text)
     # Helpful for exact-answer grading of simple facts/numbers; avoids punctuation-only mismatches.
-    text = re.sub(r"[^\w\s.+\-/]", "", text, flags=re.UNICODE)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
+    # Replace disallowed punctuation with a SPACE (not nothing) so "a,b,c" and
+    # "a, b, c" both collapse to "a b c" instead of "abc" vs "a b c".
+    loose = re.sub(r"[^\w\s.+\-/]", " ", base, flags=re.UNICODE)
+    loose = re.sub(r"\s+", " ", loose).strip()
+    # Don't let a symbol-only answer (e.g. "<", ">", "=") collapse to "" and thus
+    # compare equal to every other symbol; fall back to the vote-normalized form.
+    return loose or base
 
 
 def _regex_extract(raw: str, patterns: Iterable[str]) -> Optional[str]:
@@ -73,12 +77,16 @@ def extract_answer(raw: str, test: Mapping[str, Any], defaults: Mapping[str, Any
 
 
 def _number_from_text(text: str) -> Optional[float]:
-    # Supports integers, decimals, optional commas, scientific notation.
-    m = re.search(r"[-+]?\d[\d,]*(?:\.\d+)?(?:[eE][-+]?\d+)?", text or "")
-    if not m:
+    # Supports integers, decimals (including leading-dot like ".5"), optional
+    # thousands commas, signs, and scientific notation. Returns the LAST number
+    # in the text: benchmark answers place the final numeric result last, so a
+    # restated question ("...giving 6 marbles", "2, 4, 8, 16, 32") would
+    # otherwise be mis-read as its first (distractor) number.
+    matches = re.findall(r"[-+]?(?:\d[\d,]*(?:\.\d+)?|\.\d+)(?:[eE][-+]?\d+)?", text or "")
+    if not matches:
         return None
     try:
-        return float(m.group(0).replace(",", ""))
+        return float(matches[-1].replace(",", ""))
     except ValueError:
         return None
 
@@ -173,7 +181,13 @@ def grade_answer(extracted_answer: str, raw_output: str, test: Mapping[str, Any]
         if got is None:
             return {"correct": False, "grade_type": gtype, "expected": expected, "got": None}
         abs_tol = float(grader.get("abs_tol", grader.get("tolerance", 0.0)))
-        rel_tol = float(grader.get("rel_tol", 0.0))
+        # Default to math.isclose's normal relative tolerance so accumulated
+        # float drift (e.g. 0.1 + 0.2 printed as 0.30000000000000004) doesn't
+        # fail exact-equality by surprise. Set rel_tol/abs_tol explicitly to 0
+        # for strict equality.
+        rel_tol = float(grader.get("rel_tol", 1e-9))
+        if abs_tol < 0 or rel_tol < 0:
+            return {"correct": False, "grade_type": gtype, "error": "tolerance must be non-negative"}
         ok = math.isclose(got, expected, abs_tol=abs_tol, rel_tol=rel_tol)
         return {"correct": ok, "grade_type": gtype, "expected": expected, "got": got, "abs_tol": abs_tol, "rel_tol": rel_tol}
 
