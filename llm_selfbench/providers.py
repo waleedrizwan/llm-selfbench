@@ -91,7 +91,11 @@ class ClaudeCodeProvider(Provider):
 
         for extra in self.cfg.get("extra_args", []) or []:
             args.append(str(extra))
-        args.append(prompt)
+        # Pass the prompt on stdin instead of as a trailing positional argument.
+        # The claude CLI's --disallowedTools/--allowedTools flags are variadic
+        # (`<tools...>`), so a positional prompt after them is greedily consumed
+        # as tool names, leaving no prompt ("Input must be provided ..."). stdin
+        # sidesteps that entirely and also avoids argv length limits.
 
         extra_env = dict(self.cfg.get("env", {}) or {})
         if self.cfg.get("no_session_persistence", True):
@@ -109,6 +113,7 @@ class ClaudeCodeProvider(Provider):
                     env=env_with(extra_env),
                     text=True,
                     capture_output=True,
+                    input=prompt,
                     timeout=timeout,
                 )
             except subprocess.TimeoutExpired as exc:

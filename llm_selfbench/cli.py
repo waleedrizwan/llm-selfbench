@@ -64,7 +64,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def cmd_check(args: argparse.Namespace) -> int:
     config = _load_config(args.config)
-    openrouter_models = _split_csv(args.openrouter_model)
+    openrouter_models = list(dict.fromkeys(_split_csv(args.openrouter_model)))  # de-duplicate
     for model in openrouter_models:
         config.setdefault("providers", []).append({
             "name": f"openrouter:{model}",
@@ -74,15 +74,23 @@ def cmd_check(args: argparse.Namespace) -> int:
             "api_key_env": "OPENROUTER_API_KEY",
         })
     filters = [f.lower() for f in _split_csv(args.providers)]
-    checks = []
-    for cfg in config.get("providers", []):
+
+    def _include(cfg: Dict[str, Any]) -> bool:
         name = str(cfg.get("name", "")).lower()
         ptype = str(cfg.get("type", "")).lower()
-        if filters:
-            include = any(f in name or f == ptype or f == name for f in filters)
-        else:
-            include = bool(cfg.get("enabled", True))
-        if include:
+        enabled = bool(cfg.get("enabled", True))
+        if not filters:
+            return enabled
+        for f in filters:
+            if f == name:
+                return True  # exact name overrides enabled=false
+            if (f == ptype or f in name) and enabled:
+                return True
+        return False
+
+    checks = []
+    for cfg in config.get("providers", []):
+        if _include(cfg):
             try:
                 checks.append(build_provider(cfg).check())
             except Exception as exc:  # noqa: BLE001
@@ -93,6 +101,10 @@ def cmd_check(args: argparse.Namespace) -> int:
         for c in checks:
             mark = "OK" if c.get("ok") else "FAIL"
             print(f"{mark:4} {c.get('name')} ({c.get('type')}): {c.get('details')}")
+    if not checks:
+        hint = f" matching filter {', '.join(filters)}" if filters else ""
+        print(f"No providers{hint} to check.", file=sys.stderr)
+        return 1
     return 0 if all(c.get("ok") for c in checks) else 1
 
 
@@ -140,7 +152,7 @@ def cmd_list_openrouter(args: argparse.Namespace) -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
-    models = payload.get("data", payload if isinstance(payload, list) else [])
+    models = payload if isinstance(payload, list) else payload.get("data", [])
     search = (args.search or "").lower()
     if search:
         models = [m for m in models if search in str(m.get("id", "")).lower() or search in str(m.get("name", "")).lower()]
