@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-selfbench"
+version = "0.1.0"
+description = "A local self-consistency benchmark runner for Claude Code CLI, Codex CLI, and OpenRouter models."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "llm-selfbench"}]
+dependencies = []
+
+[project.scripts]
+llm-selfbench = "llm_selfbench.cli:main"
+
+[tool.setuptools]
+packages = ["llm_selfbench"]

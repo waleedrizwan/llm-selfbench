@@ -1,0 +1,60 @@
+{
+  "run": {
+    "k": 10,
+    "timeout_sec": 300,
+    "jitter_attempts": false,
+    "continue_on_provider_check_failure": false
+  },
+  "providers": [
+    {
+      "name": "claude-code",
+      "type": "claude_code",
+      "enabled": true,
+      "command": "claude",
+      "model": null,
+      "timeout_sec": 300,
+      "safe_mode": false,
+      "disable_slash_commands": true,
+      "no_session_persistence": true,
+      "max_turns": 1,
+      "disallow_tools": true,
+      "disallowed_tools": "*",
+      "extra_args": [],
+      "env": {}
+    },
+    {
+      "name": "codex-cli",
+      "type": "codex_cli",
+      "enabled": true,
+      "command": "codex",
+      "model": null,
+      "timeout_sec": 300,
+      "sandbox": "read-only",
+      "ephemeral": true,
+      "skip_git_repo_check": true,
+      "ignore_rules": false,
+      "ignore_user_config": false,
+      "extra_args": [],
+      "env": {}
+    },
+    {
+      "name": "openrouter-example-disabled",
+      "type": "openrouter",
+      "enabled": false,
+      "model": "openai/gpt-5.2",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "temperature": 0.7,
+      "max_tokens": 512,
+      "timeout_sec": 300,
+      "headers": {
+        "HTTP-Referer": "http://localhost",
+        "X-OpenRouter-Title": "llm-selfbench"
+      }
+    },
+    {
+      "name": "mock-good",
+      "type": "mock",
+      "enabled": false
+    }
+  ]
+}
